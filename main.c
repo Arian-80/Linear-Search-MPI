@@ -27,6 +27,7 @@ int getIntIndex_speed(const int* intListToSearch, int listSize, int integerToFin
 
     if (processorCount > listSize) {
         if (!rank) printf("More processors than items in list. Aborting...\n");
+        MPI_Abort(MPI_COMM_WORLD, -1);
         return -2;
     }
 
@@ -68,52 +69,22 @@ long long getIntIndex_memory(
      * This significantly improves memory usage but also decreases speed.
      * This variation is substantially more scalable than the other variation.
      */
-    if (listSize <= INT_MAX)
+    if (listSize <= INT_MAX) {
         return getIntIndex_speed(intListToSearch, (int) listSize, integerToFind);
+    }
 
     int processorCount;
     int rank;
     MPI_Comm_size(MPI_COMM_WORLD, &processorCount);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-
         if (listSize > LONG_LONG_MAX) { // Overflow occurred
             if (!rank) printf("List is too large. Try dividing the list "
                               "into multiple lists.\n");
             return -2;
-        } else if (listSize > (long long) INT_MAX * processorCount) {
-            if (!rank) printf("List is too large for the provided number of "
-                              "processors.\nTry adding more processors"
-                              " or dividing the list.\n");
-            return -2;
         }
 
-    if (processorCount > listSize) {
-        if (!rank) printf("More processors than items in list. Aborting...\n");
-        return -2;
-    }
-
-    int portion = (int) (listSize / processorCount);
-    int remainder = (int) (listSize % processorCount);
-
-    /*
-    // Compute counts and displacements for MPI_Scatterv.
-    int sendcounts[processorCount];
-    int scatterDispls[processorCount]; // Displacement for Scatterv
-    if (!rank) { // Only rank 0 manages the global communications
-        int currScatterDispls = 0;
-        // Processes dealing with remainders have additional counts and displs
-        for (int i = 0; i < remainder; i++) {
-            scatterDispls[i] = currScatterDispls;
-            sendcounts[i] = portion+1;
-            currScatterDispls += portion+1;
-        }
-        for (int i = remainder; i < processorCount; i++) {
-            scatterDispls[i] = currScatterDispls;
-            sendcounts[i] = portion;
-            currScatterDispls += portion;
-        }
-    }
-    */
+    long long portion = listSize / processorCount;
+    long long remainder = listSize % processorCount;
 
     if (rank < remainder) {
         portion++;
@@ -133,12 +104,8 @@ long long getIntIndex_memory(
             MPI_Abort(MPI_COMM_WORLD, -1);
             return -2;
         }
-//        MPI_Scatterv(intListToSearch, sendcounts, scatterDispls, MPI_INT,intListToSearch,
-//                     1500000000, MPI_INT, 0, MPI_COMM_WORLD);
     }
     else {
-//        MPI_Scatterv(intListToSearch, sendcounts, scatterDispls, MPI_INT,
-//                     MPI_IN_PLACE, 1500000000, MPI_INT, 0, MPI_COMM_WORLD);
         intListToSearch = (int*) realloc(
                 intListToSearch,(size_t) sizeof(int) * portion);
         if (intListToSearch == NULL) {
@@ -148,9 +115,10 @@ long long getIntIndex_memory(
     }
 
     long long foundIndex = LONG_LONG_MAX;
-    for (int i = 0; i < portion; i++) {
+    for (long long i = 0; i < portion; i++) {
         if (intListToSearch[i] == integerToFind) {
-            foundIndex = (long long) portion * rank + (long long) i;
+            foundIndex = rank < remainder ? portion * rank + i :
+                    (portion+1)*remainder + portion*(rank-remainder) + i;
             break;
         }
     }
@@ -166,17 +134,21 @@ long long getIntIndex_memory(
 
 int main(int argc, char** argv) {
     MPI_Init(&argc, &argv);
-    long long size = 1000000000;
-    int* list = (int*) calloc((size_t) size, sizeof(int));
+    long long size = 600000000;
+    int item = 12845612;
+    int* list = (int*) calloc(size,sizeof(int));
     if (list == NULL) {
+        printf("Failed to create list. Aborting..\n");
         MPI_Finalize();
         return -1;
     }
-    list[954554845] = 45;
+    list[size-2] = item;
+    list[size-1] = item;
+
     long long index;
     double start, end;
     start = MPI_Wtime();
-    index = getIntIndex_memory(list, size, 45);
+    index = getIntIndex_memory(list, size, item);
     end = MPI_Wtime();
     if (index == -2) {
         free(list);
@@ -186,9 +158,11 @@ int main(int argc, char** argv) {
     else if (index == -1) {
         printf("Item not found.\n");
     }
-    else printf("First instance of item found at index %lli\n", index);
+    else printf("First instance of %lli found at index %lli\n", item, index);
     printf("Time taken: %f\n", end - start);
     free(list);
+    FILE* f = fopen("times.txt", "a");
+    fprintf(f, "%g,", end - start);
     MPI_Finalize();
     return 0;
 }
